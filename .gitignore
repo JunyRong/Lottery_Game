@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+config/tiers.json
+抽奖结果_*.xlsx
+build/
+dist/
+*.spec
