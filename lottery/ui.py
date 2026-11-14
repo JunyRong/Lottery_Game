@@ -811,7 +811,17 @@ class LotteryApp:
         edit_btn.pack(side=tk.LEFT, padx=(8, 0))
         del_btn = ttk.Button(buttons, text="删除", command=self._on_delete_tier)
         del_btn.pack(side=tk.LEFT, padx=(8, 0))
-        self._action_buttons.extend([add_btn, edit_btn, del_btn])
+        self.move_down_btn = ttk.Button(
+            buttons, text="下移", command=lambda: self._move_tier(1)
+        )
+        self.move_down_btn.pack(side=tk.RIGHT)
+        self.move_up_btn = ttk.Button(
+            buttons, text="上移", command=lambda: self._move_tier(-1)
+        )
+        self.move_up_btn.pack(side=tk.RIGHT, padx=(0, 8))
+        self._action_buttons.extend(
+            [add_btn, edit_btn, del_btn, self.move_up_btn, self.move_down_btn]
+        )
 
     def _build_stage(self, parent: tk.Frame) -> None:
         panel = tk.Frame(parent, bg=CARD, padx=18, pady=10)
@@ -1088,6 +1098,7 @@ class LotteryApp:
             self.tier_combo.current(index)
         else:
             self.tier_combo.set("")
+        self._update_move_buttons()
         self._update_draw_state()
 
     def _refresh_info(self) -> None:
@@ -1143,6 +1154,7 @@ class LotteryApp:
         if self.selected_tier_id in [t.id for t in self.tiers]:
             index = [t.id for t in self.tiers].index(self.selected_tier_id)
             self.tier_combo.current(index)
+        self._update_move_buttons()
         self._update_draw_state()
 
     def _on_combo_select(self, _event: tk.Event) -> None:
@@ -1150,7 +1162,21 @@ class LotteryApp:
         if 0 <= index < len(self.tiers):
             self.selected_tier_id = self.tiers[index].id
             self.tier_tree.selection_set(self.selected_tier_id)
+        self._update_move_buttons()
         self._update_draw_state()
+
+    def _update_move_buttons(self) -> None:
+        """上移/下移只在可编辑且有相邻奖项时可用。"""
+        tier = self._current_tier()
+        index = self.tiers.index(tier) if tier in self.tiers else -1
+        self.move_up_btn.state(
+            ["disabled"] if self._busy or index <= 0 else ["!disabled"]
+        )
+        self.move_down_btn.state(
+            ["disabled"]
+            if self._busy or index < 0 or index >= len(self.tiers) - 1
+            else ["!disabled"]
+        )
 
     # ------------------------------------------------------------------ 抽奖
     def _on_draw(self) -> None:
@@ -1276,6 +1302,7 @@ class LotteryApp:
         for button in self._action_buttons:
             button.state(["disabled"] if busy else ["!disabled"])
         self.tier_combo.configure(state=tk.DISABLED if busy else "readonly")
+        self._update_move_buttons()
         self._update_draw_state()
 
     # ------------------------------------------------------------------ 导入/导出
@@ -1407,12 +1434,34 @@ class LotteryApp:
     def _on_add_tier(self) -> None:
         if not self._tiers_editable():
             return
-        dialog = TierDialog(self.root)
+        dialog = TierDialog(self.root, tiers=self.tiers)
         self.root.wait_window(dialog)
         if dialog.result is None:
             return
-        self.tiers.append(dialog.result)
+        position = dialog.position
+        if position is None:
+            position = len(self.tiers)
+        position = max(0, min(position, len(self.tiers)))
+        self.tiers.insert(position, dialog.result)
         self.selected_tier_id = dialog.result.id
+        save_tiers(self.tiers)
+        self._rebuild_engine()
+        self._refresh_all()
+
+    def _move_tier(self, offset: int) -> None:
+        """上移/下移选中奖项，保持该项为当前奖项。"""
+        if not self._tiers_editable():
+            return
+        tier = self._current_tier()
+        if tier is None:
+            messagebox.showinfo("提示", "请先选择一个奖项。")
+            return
+        index = self.tiers.index(tier)
+        target = index + offset
+        if not 0 <= target < len(self.tiers):
+            return
+        self.tiers[index], self.tiers[target] = self.tiers[target], self.tiers[index]
+        self.selected_tier_id = tier.id
         save_tiers(self.tiers)
         self._rebuild_engine()
         self._refresh_all()

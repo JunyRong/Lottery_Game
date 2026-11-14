@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from lottery.excel_io import read_names  # noqa: E402
-from lottery.ui import LotteryApp, ManualInputDialog  # noqa: E402
+from lottery.ui import LotteryApp, ManualInputDialog, TierDialog  # noqa: E402
 
 
 def main() -> None:
@@ -21,6 +21,23 @@ def main() -> None:
     app._rebuild_engine()
     app._refresh_all()
     assert app.selected_tier_id == app.tiers[-1].id, "默认应从最低奖项开始"
+
+    # 奖项顺序调整：上移/下移保持选中项，添加时可选择插入位置
+    if len(app.tiers) >= 2:
+        original_ids = [t.id for t in app.tiers]
+        last_id = original_ids[-1]
+        app._move_tier(-1)
+        assert app.tiers[-2].id == last_id, "上移未改变奖项顺序"
+        assert app.selected_tier_id == last_id, "上移后选中项发生变化"
+        app._move_tier(1)
+        assert [t.id for t in app.tiers] == original_ids, "下移未恢复原顺序"
+
+    dialog = TierDialog(root, tiers=app.tiers)
+    assert dialog.position_combo.current() == len(app.tiers), "新增奖项默认应追加到末尾"
+    dialog.position_combo.current(0)
+    dialog.name_var.set("特等奖")
+    dialog._on_ok()
+    assert dialog.position == 0 and dialog.result is not None, "未记录插入位置"
 
     lowest = app.tiers[-1]
     expected = min(lowest.count, len(app.names))
