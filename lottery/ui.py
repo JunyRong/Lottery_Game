@@ -6,6 +6,7 @@ import os
 import random
 import tkinter as tk
 import tkinter.font as tkfont
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -21,7 +22,7 @@ from .excel_io import (
 )
 from .models import Entrant, PrizeTier, Winner
 from .names import parse_manual_names
-from .tier_io import read_tiers
+from .tier_io import TierPreview, read_tiers
 
 BG = "#eaf3fc"
 CARD = "#ffffff"
@@ -43,18 +44,46 @@ FONT_TITLE = ("Microsoft YaHei UI", 13, "bold")
 FONT_STAGE = ("Microsoft YaHei UI", 58, "bold")
 FONT_BUTTON = ("Microsoft YaHei UI", 15, "bold")
 
+# 舞台字号从大到小尝试；批量结果会自动排成多列以容纳全部中奖者。
+STAGE_FONT_SIZES = (
+    58,
+    52,
+    46,
+    40,
+    34,
+    28,
+    24,
+    20,
+    18,
+    16,
+    14,
+    12,
+    10,
+    9,
+    8,
+    7,
+    6,
+    5,
+    4,
+)
 
-class ImportDialog(tk.Toplevel):
-    """选择工作表与姓名列。result = (names, sheet_name) 或 None。"""
+
+class SheetDialog(tk.Toplevel):
+    """“选择工作表”弹窗的公共骨架：文件卡片、工作表下拉框与底部按钮。
+
+    子类通过 `_build_content()` 追加自己的控件，并实现 `_load_sheet()` /
+    `_on_ok()`；`result` 的具体类型由子类定义。
+    """
+
+    title_text = ""
 
     def __init__(self, master: tk.Misc, path: str):
         super().__init__(master)
-        self.title("导入抽奖名单")
+        self.title(self.title_text)
         self.resizable(False, False)
         self.transient(master)
         self.path = path
-        self.preview: SheetPreview | None = None
-        self.result: tuple[list[str], str] | None = None
+        self.result = None
 
         try:
             sheets = list_sheets(path)
@@ -86,28 +115,9 @@ class ImportDialog(tk.Toplevel):
         self.sheet_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=4)
         self.sheet_combo.current(0)
         self.sheet_combo.bind("<<ComboboxSelected>>", lambda _e: self._load_sheet())
-
-        tk.Label(form, text="姓名列", bg=CARD, fg=INK, font=FONT).grid(
-            row=1, column=0, sticky="w", pady=4
-        )
-        self.column_combo = ttk.Combobox(
-            form, values=[], state="readonly", width=40, font=FONT
-        )
-        self.column_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=4)
-        self.column_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_count())
         form.columnconfigure(1, weight=1)
 
-        self.info_var = tk.StringVar(value="正在读取…")
-        tk.Label(
-            card,
-            textvariable=self.info_var,
-            bg=CARD,
-            fg=MUTED,
-            font=FONT,
-            anchor="w",
-            justify="left",
-            wraplength=560,
-        ).pack(fill=tk.X, pady=(12, 4))
+        self._build_content(card, form)
 
         buttons = tk.Frame(card, bg=CARD)
         buttons.pack(fill=tk.X, pady=(12, 0))
@@ -122,6 +132,48 @@ class ImportDialog(tk.Toplevel):
         self._load_sheet()
         self.grab_set()
         self.focus_set()
+
+    def _build_content(self, card: tk.Frame, form: tk.Frame) -> None:
+        raise NotImplementedError
+
+    def _load_sheet(self) -> None:
+        raise NotImplementedError
+
+    def _on_ok(self) -> None:
+        raise NotImplementedError
+
+
+class ImportDialog(SheetDialog):
+    """选择工作表与姓名列。result = (names, sheet_name) 或 None。"""
+
+    title_text = "导入抽奖名单"
+
+    def __init__(self, master: tk.Misc, path: str):
+        self.preview: SheetPreview | None = None
+        self.result: tuple[list[str], str] | None = None
+        super().__init__(master, path)
+
+    def _build_content(self, card: tk.Frame, form: tk.Frame) -> None:
+        tk.Label(form, text="姓名列", bg=CARD, fg=INK, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        self.column_combo = ttk.Combobox(
+            form, values=[], state="readonly", width=40, font=FONT
+        )
+        self.column_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=4)
+        self.column_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_count())
+
+        self.info_var = tk.StringVar(value="正在读取…")
+        tk.Label(
+            card,
+            textvariable=self.info_var,
+            bg=CARD,
+            fg=MUTED,
+            font=FONT,
+            anchor="w",
+            justify="left",
+            wraplength=560,
+        ).pack(fill=tk.X, pady=(12, 4))
 
     def _load_sheet(self) -> None:
         sheet = self.sheet_combo.get()
@@ -183,49 +235,17 @@ class ImportDialog(tk.Toplevel):
         self.destroy()
 
 
-class PrizeImportDialog(tk.Toplevel):
+class PrizeImportDialog(SheetDialog):
     """从 Excel 导入奖项设置。result 为 PrizeTier 列表或 None。"""
 
+    title_text = "导入奖项设置"
+
     def __init__(self, master: tk.Misc, path: str):
-        super().__init__(master)
-        self.title("导入奖项设置")
-        self.resizable(False, False)
-        self.transient(master)
-        self.path = path
-        self.preview = None
+        self.preview: TierPreview | None = None
         self.result: list[PrizeTier] | None = None
+        super().__init__(master, path)
 
-        try:
-            sheets = list_sheets(path)
-        except Exception as exc:
-            self.destroy()
-            raise RuntimeError(str(exc)) from exc
-
-        card = tk.Frame(self, bg=CARD, padx=20, pady=16)
-        card.pack(fill=tk.BOTH, expand=True)
-        tk.Label(
-            card,
-            text=f"文件：{Path(path).name}",
-            bg=CARD,
-            fg=INK,
-            font=FONT_BOLD,
-            anchor="w",
-            wraplength=560,
-        ).pack(fill=tk.X, pady=(0, 12))
-
-        form = tk.Frame(card, bg=CARD)
-        form.pack(fill=tk.X)
-        tk.Label(form, text="工作表", bg=CARD, fg=INK, font=FONT).grid(
-            row=0, column=0, sticky="w", pady=4
-        )
-        self.sheet_combo = ttk.Combobox(
-            form, values=sheets, state="readonly", width=40, font=FONT
-        )
-        self.sheet_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=4)
-        self.sheet_combo.current(0)
-        self.sheet_combo.bind("<<ComboboxSelected>>", lambda _e: self._load_sheet())
-        form.columnconfigure(1, weight=1)
-
+    def _build_content(self, card: tk.Frame, form: tk.Frame) -> None:
         self.info_var = tk.StringVar(value="正在读取…")
         tk.Label(
             card,
@@ -269,20 +289,6 @@ class PrizeImportDialog(tk.Toplevel):
             justify="left",
             wraplength=560,
         ).pack(fill=tk.X, pady=(8, 0))
-
-        buttons = tk.Frame(card, bg=CARD)
-        buttons.pack(fill=tk.X, pady=(12, 0))
-        self.ok_button = ttk.Button(buttons, text="导入", command=self._on_ok)
-        self.ok_button.pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="取消", command=self.destroy).pack(
-            side=tk.RIGHT, padx=(0, 8)
-        )
-
-        self.bind("<Return>", lambda _e: self._on_ok())
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self._load_sheet()
-        self.grab_set()
-        self.focus_set()
 
     def _load_sheet(self) -> None:
         sheet = self.sheet_combo.get()
@@ -623,6 +629,11 @@ class LotteryApp:
         self._after_id: str | None = None
         self._busy = False
         self._result_visible = False
+        self._stage_sub_hidden = False
+        self._stage_sub_forced_hidden = False
+        self._stage_winners: list[Winner] | None = None
+        self._stage_winner_labels: list[tk.Label] = []
+        self._stage_grid_layout: tuple[int, int] | None = None
         self._action_buttons: list[ttk.Button] = []
 
         self._build_styles()
@@ -863,8 +874,14 @@ class LotteryApp:
             family=FONT_STAGE[0], size=FONT_STAGE[1], weight=FONT_STAGE[2]
         )
         self.stage_sub_font = tkfont.Font(family="Microsoft YaHei UI", size=11)
+
+        # 舞台内容区：单人时显示一个大标签，多人时改为按可用空间自动排布网格。
+        self.stage_body = tk.Frame(stage, bg=STAGE_BG)
+        self.stage_body.grid(row=0, column=0, sticky="nsew")
+        self.stage_body.bind("<Configure>", self._on_stage_resize)
+
         self.stage_label = tk.Label(
-            stage,
+            self.stage_body,
             textvariable=self.stage_name,
             bg=STAGE_BG,
             fg=STAGE_IDLE,
@@ -872,8 +889,15 @@ class LotteryApp:
             wraplength=640,
             justify="center",
             anchor="center",
+            padx=0,
+            pady=0,
+            borderwidth=0,
+            highlightthickness=0,
         )
-        self.stage_label.grid(row=0, column=0, sticky="nsew")
+        self.stage_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.stage_grid = tk.Frame(self.stage_body, bg=STAGE_BG)
+
         self.stage_sub_label = tk.Label(
             stage,
             textvariable=self.stage_sub,
@@ -885,7 +909,6 @@ class LotteryApp:
             anchor="n",
         )
         self.stage_sub_label.grid(row=1, column=0, sticky="ew")
-        stage.bind("<Configure>", self._on_stage_resize)
 
         controls = tk.Frame(panel, bg=CARD)
         controls.grid(row=2, column=0, sticky="ew")
@@ -931,13 +954,12 @@ class LotteryApp:
 
     # ------------------------------------------------------------ 舞台自适应
     def _on_stage_resize(self, event: tk.Event) -> None:
-        """舞台尺寸变化时同步换行宽度，避免结果文字被裁掉。"""
-        if event.widget is not self.stage_box:
+        """舞台尺寸变化时重新排布中奖者，保证全部内容都在可视区域内。"""
+        if event.widget is not self.stage_body:
             return
-        wrap = max(160, event.width - 40)
-        self.stage_label.configure(wraplength=wrap)
-        self.stage_sub_label.configure(wraplength=wrap)
-        self._fit_stage_font(self.stage_name.get())
+        self.stage_label.configure(wraplength=max(160, event.width - 40))
+        self.stage_sub_label.configure(wraplength=max(160, event.width))
+        self._refresh_stage_layout()
 
     @staticmethod
     def _wrapped_lines(text: str, font: tkfont.Font, wrap: int) -> int:
@@ -954,65 +976,181 @@ class LotteryApp:
             lines += 1
         return max(1, lines)
 
-    def _fit_stage_font(self, text: str) -> None:
-        """按舞台大小自动缩放中奖姓名，保证长姓名也能完整显示。"""
-        width = max(160, self.stage_box.winfo_width() - 40)
-        height = self.stage_box.winfo_height()
-        if height <= 1:
-            height = 180
-        sub_font = self.stage_sub_font
-        content_height = max(24, height - 20)
+    @staticmethod
+    def _grid_gaps(size: int) -> tuple[int, int]:
+        """列间距/行间距随字号缩小，尽量在有限空间里多放几列。"""
+        if size >= 14:
+            return (18, 3)
+        if size <= 6:
+            return (6, 1)
+        if size <= 9:
+            return (8, 1)
+        return (10, 1)
 
-        # 舞台过矮时先隐藏副标题，优先保证中奖姓名完整可见。
-        hidden = getattr(self, "_stage_sub_hidden", False)
-        if hidden and content_height >= 110:
-            self.stage_sub_label.grid()
-            hidden = False
-            self._stage_sub_hidden = False
-        if hidden:
-            available_height = content_height - 4
+    def _stage_available_height(self) -> tuple[int, int]:
+        """返回舞台内容区的可用宽高，并按需显示或隐藏副标题。"""
+        width = self.stage_body.winfo_width()
+        if width <= 1:
+            width = max(160, self.stage_box.winfo_width() - 40)
+        total_height = max(24, self.stage_box.winfo_height() - 20)
+
+        # 中奖者太多时强制让出副标题区域，优先保证全部姓名可见。
+        if self._stage_sub_forced_hidden:
+            self.stage_sub_label.grid_remove()
+            self._stage_sub_hidden = True
+            return width, max(24, total_height - 4)
+
+        # 舞台过矮时先隐藏副标题，优先保证中奖者完整可见。
+        sub_font = self.stage_sub_font
+        if self.stage_sub_label.winfo_ismapped():
+            sub_height = self.stage_sub_label.winfo_reqheight()
         else:
-            if self.stage_sub_label.winfo_ismapped():
-                sub_height = self.stage_sub_label.winfo_reqheight()
-            else:
-                sub_lines = self._wrapped_lines(
-                    self.stage_sub.get(), sub_font, width
-                )
-                sub_height = sub_lines * sub_font.metrics("linespace") + 6
-            if content_height - sub_height < 28:
+            sub_lines = self._wrapped_lines(self.stage_sub.get(), sub_font, width)
+            sub_height = sub_lines * sub_font.metrics("linespace") + 6
+
+        if self._stage_sub_hidden:
+            if total_height - sub_height >= 36:
+                self.stage_sub_label.grid()
+                self._stage_sub_hidden = False
+        elif total_height - sub_height < 28:
+            self.stage_sub_label.grid_remove()
+            self._stage_sub_hidden = True
+
+        if self._stage_sub_hidden:
+            return width, max(24, total_height - 4)
+        return width, max(24, total_height - sub_height - 6)
+
+    def _fit_stage_font(self, text: str) -> None:
+        """按舞台大小缩放单人姓名；多人结果由 `_layout_stage_winners()` 处理。"""
+        width, height = self._stage_available_height()
+        wrap = max(160, width - 40)
+        self.stage_label.configure(wraplength=wrap)
+        for size in STAGE_FONT_SIZES:
+            self.stage_font.configure(size=size)
+            lines = self._wrapped_lines(text, self.stage_font, wrap)
+            if lines * self.stage_font.metrics("linespace") <= height:
+                break
+
+    def _best_grid_fit(
+        self, texts: list[str], width: int, height: int
+    ) -> tuple[int, int, bool]:
+        """选出放下全部中奖者的字号与列数，并说明是否真正放得下。"""
+        count = len(texts)
+        best_size, best_cols = STAGE_FONT_SIZES[-1], 1
+        for size in STAGE_FONT_SIZES:
+            self.stage_font.configure(size=size)
+            line_height = self.stage_font.metrics("linespace")
+            gap_x, gap_y = self._grid_gaps(size)
+            cell_width = max(self.stage_font.measure(text) for text in texts) + gap_x
+            cols = max(1, (width + gap_x) // cell_width)
+            cols = min(cols, count)
+            rows = (count + cols - 1) // cols
+            content_height = rows * line_height + max(0, rows - 1) * gap_y
+            best_size, best_cols = size, cols
+            if content_height <= height:
+                return size, cols, True
+        return best_size, best_cols, False
+
+    def _rebuild_stage_labels(self, texts: list[str], cols: int, size: int) -> None:
+        """按行优先顺序把中奖者铺进网格，每行自动决定显示几人。"""
+        for label in self._stage_winner_labels:
+            label.destroy()
+        self._stage_winner_labels.clear()
+
+        gap_x, gap_y = self._grid_gaps(size)
+        rows = (len(texts) + cols - 1) // cols
+        for index, text in enumerate(texts):
+            row, col = divmod(index, cols)
+            label = tk.Label(
+                self.stage_grid,
+                text=text,
+                bg=STAGE_BG,
+                fg=RESULT_RED,
+                font=self.stage_font,
+                anchor="center",
+                padx=0,
+                pady=0,
+                borderwidth=0,
+                highlightthickness=0,
+            )
+            label.grid(
+                row=row,
+                column=col,
+                sticky="n",
+                padx=(0, gap_x if col < cols - 1 else 0),
+                pady=(0, gap_y if row < rows - 1 else 0),
+            )
+            self._stage_winner_labels.append(label)
+
+    def _layout_stage_winners(self) -> None:
+        winners = self._stage_winners
+        if not winners:
+            return
+        width, height = self._stage_available_height()
+        texts = [f"{winner.number} 号 · {winner.name}" for winner in winners]
+        size, cols, fits = self._best_grid_fit(texts, width, height)
+
+        # 字号偏小时让出副标题区域往往能换来更大的字号，优先保证可读性。
+        if not self._stage_sub_forced_hidden and not self._stage_sub_hidden:
+            hidden_height = max(24, self.stage_box.winfo_height() - 20 - 4)
+            alt_size, alt_cols, alt_fits = self._best_grid_fit(
+                texts, width, hidden_height
+            )
+            prefer_alt = (not fits) or (fits and size < 12 and alt_size > size)
+            if prefer_alt:
+                self._stage_sub_forced_hidden = True
                 self.stage_sub_label.grid_remove()
                 self._stage_sub_hidden = True
-                available_height = content_height - 4
-            else:
-                available_height = content_height - sub_height - 6
+                size, cols = alt_size, alt_cols
 
-        for size in (58, 52, 46, 40, 34, 28, 24, 20, 18, 16):
-            self.stage_font.configure(size=size)
-            lines = self._wrapped_lines(text, self.stage_font, width)
-            if (
-                lines * self.stage_font.metrics("linespace")
-                <= available_height
-            ):
-                return
+        self.stage_font.configure(size=size)
+        signature = (size, cols)
+        if signature == self._stage_grid_layout and len(self._stage_winner_labels) == len(
+            texts
+        ):
+            return
+        self._stage_grid_layout = signature
+        self._rebuild_stage_labels(texts, cols, size)
+
+    def _refresh_stage_layout(self) -> None:
+        if self._stage_winners is None:
+            self._fit_stage_font(self.stage_name.get())
+        else:
+            self._layout_stage_winners()
 
     def _set_stage_name(self, text: str) -> None:
+        self._stage_winners = None
+        self._stage_grid_layout = None
+        self._stage_sub_forced_hidden = False
         self.stage_name.set(text)
+        self.stage_grid.place_forget()
+        self.stage_label.place(relx=0.5, rely=0.5, anchor="center")
         self._fit_stage_font(text)
+
+    def _set_stage_winners(self, winners: list[Winner]) -> None:
+        """批量结果：完整写入中奖名单，并用自适应网格全部展示。"""
+        self._stage_winners = list(winners)
+        self.stage_name.set(self._batch_stage_text(winners))
+        self._stage_grid_layout = None
+        self._stage_sub_forced_hidden = False
+        self.stage_label.place_forget()
+        self.stage_grid.place(relx=0.5, rely=0.5, anchor="center")
+        self._layout_stage_winners()
 
     def _set_stage_result(self, is_result: bool) -> None:
         """抽奖结果用红色，等待/提示状态用科技蓝浅色。"""
-        self.stage_label.configure(fg=RESULT_RED if is_result else STAGE_IDLE)
+        color = RESULT_RED if is_result else STAGE_IDLE
+        self.stage_label.configure(fg=color)
+        for label in self._stage_winner_labels:
+            label.configure(fg=color)
         self.stage_sub_label.configure(
             fg=RESULT_RED_SOFT if is_result else STAGE_HINT
         )
 
     @staticmethod
     def _batch_stage_text(winners: list[Winner]) -> str:
-        """批量抽奖时沿用与单人一致的「编号 号 · 姓名」格式。"""
-        lines = [f"{winner.number} 号 · {winner.name}" for winner in winners[:3]]
-        if len(winners) > 3:
-            lines.append(f"等 {len(winners)} 人")
-        return "\n".join(lines)
+        """批量抽奖时列出全部中奖者，沿用与单人一致的「编号 号 · 姓名」格式。"""
+        return "\n".join(f"{winner.number} 号 · {winner.name}" for winner in winners)
 
     def _build_winners(self, parent: tk.Frame) -> None:
         panel = tk.Frame(parent, bg=CARD, padx=14, pady=10)
@@ -1057,11 +1195,16 @@ class LotteryApp:
     def _drawn_count(self, tier_id: str) -> int:
         return len(self.engine.winners_for(tier_id)) if self.engine else 0
 
-    def _current_tier(self) -> PrizeTier | None:
-        for tier in self.tiers:
+    def _selected_index(self) -> int:
+        """当前选中奖项的下标；未选中或已删除时返回 -1。"""
+        for index, tier in enumerate(self.tiers):
             if tier.id == self.selected_tier_id:
-                return tier
-        return None
+                return index
+        return -1
+
+    def _current_tier(self) -> PrizeTier | None:
+        index = self._selected_index()
+        return self.tiers[index] if index >= 0 else None
 
     def _refresh_all(self) -> None:
         self._result_visible = False
@@ -1071,30 +1214,35 @@ class LotteryApp:
 
     def _refresh_tiers(self) -> None:
         self.tier_tree.delete(*self.tier_tree.get_children())
-        valid_ids = {t.id for t in self.tiers}
-        if self.selected_tier_id not in valid_ids:
+        # 一次统计所有奖项的中奖数，避免每个奖项都扫描一遍中奖名单。
+        counts = Counter(w.tier_id for w in self.engine.winners) if self.engine else {}
+        drawn = {tier.id: counts.get(tier.id, 0) for tier in self.tiers}
+        if self.selected_tier_id not in drawn:
             self.selected_tier_id = self.tiers[-1].id if self.tiers else None
 
         for tier in self.tiers:
-            drawn = self._drawn_count(tier.id)
             self.tier_tree.insert(
                 "",
                 "end",
                 iid=tier.id,
-                values=(tier.name, tier.prize, tier.count, f"{drawn}/{tier.count}"),
+                values=(
+                    tier.name,
+                    tier.prize,
+                    tier.count,
+                    f"{drawn[tier.id]}/{tier.count}",
+                ),
             )
 
         if self.selected_tier_id:
             self.tier_tree.selection_set(self.selected_tier_id)
             self.tier_tree.see(self.selected_tier_id)
 
-        labels = [
-            f"{t.name} · {t.prize}（已抽 {self._drawn_count(t.id)}/{t.count}）"
+        self.tier_combo["values"] = [
+            f"{t.name} · {t.prize}（已抽 {drawn[t.id]}/{t.count}）"
             for t in self.tiers
         ]
-        self.tier_combo["values"] = labels
-        if self.selected_tier_id and self.selected_tier_id in valid_ids:
-            index = [t.id for t in self.tiers].index(self.selected_tier_id)
+        index = self._selected_index()
+        if index >= 0:
             self.tier_combo.current(index)
         else:
             self.tier_combo.set("")
@@ -1113,15 +1261,17 @@ class LotteryApp:
     def _update_draw_state(self) -> None:
         tier = self._current_tier()
         slots = 0
+        full = False
         if tier and self.engine:
-            slots = tier.count - len(self.engine.winners_for(tier.id))
-            slots = max(0, min(slots, self.engine.remaining_count))
+            drawn = self._drawn_count(tier.id)
+            full = drawn >= tier.count
+            slots = max(0, min(tier.count - drawn, self.engine.remaining_count))
         enabled = bool(
             not self._busy
             and tier is not None
             and self.engine is not None
             and self.engine.remaining_count > 0
-            and not self.engine.is_full(tier.id)
+            and not full
         )
         self.draw_button.state(["!disabled"] if enabled else ["disabled"])
         self.all_radio.configure(
@@ -1134,25 +1284,29 @@ class LotteryApp:
         )
         if not self._busy and not self._result_visible:
             if not self.tiers:
-                self.stage_sub.set("请先在左侧添加奖项")
+                hint = "请先在左侧添加奖项"
             elif not self.names:
-                self.stage_sub.set("请先导入抽奖名单")
-            elif tier and self.engine and self.engine.is_full(tier.id):
-                self.stage_sub.set(f"「{tier.name}」已抽满，请选择其他奖项")
+                hint = "请先导入抽奖名单"
+            elif tier and self.engine and full:
+                hint = f"「{tier.name}」已抽满，请选择其他奖项"
             elif self.engine and self.engine.remaining_count == 0:
-                self.stage_sub.set("所有人都已中奖")
+                hint = "所有人都已中奖"
             elif tier:
-                self.stage_sub.set(f"点击下方按钮抽取「{tier.name}」")
+                hint = f"点击下方按钮抽取「{tier.name}」"
+            else:
+                hint = ""
+            if hint:
+                self.stage_sub.set(hint)
             self._set_stage_result(False)
-            self._fit_stage_font(self.stage_name.get())
+            self._refresh_stage_layout()
 
     def _on_tier_select(self, _event: tk.Event) -> None:
         selection = self.tier_tree.selection()
         if not selection:
             return
         self.selected_tier_id = selection[0]
-        if self.selected_tier_id in [t.id for t in self.tiers]:
-            index = [t.id for t in self.tiers].index(self.selected_tier_id)
+        index = self._selected_index()
+        if index >= 0:
             self.tier_combo.current(index)
         self._update_move_buttons()
         self._update_draw_state()
@@ -1167,8 +1321,7 @@ class LotteryApp:
 
     def _update_move_buttons(self) -> None:
         """上移/下移只在可编辑且有相邻奖项时可用。"""
-        tier = self._current_tier()
-        index = self.tiers.index(tier) if tier in self.tiers else -1
+        index = self._selected_index()
         self.move_up_btn.state(
             ["disabled"] if self._busy or index <= 0 else ["!disabled"]
         )
@@ -1244,7 +1397,7 @@ class LotteryApp:
         if len(winners) == 1:
             self._set_stage_name(f"{winners[0].number} 号 · {winners[0].name}")
         else:
-            self._set_stage_name(self._batch_stage_text(winners))
+            self._set_stage_winners(winners)
 
         total = len(self.engine.winners)
         for winner in reversed(winners):
@@ -1264,9 +1417,9 @@ class LotteryApp:
             total -= 1
         self.winners_count_var.set(f"共 {len(self.engine.winners)} 位")
         self._set_busy(False)
+        advanced = self._advance_after_draw(tier)
         self._refresh_tiers()
         self._refresh_info()
-        advanced = self._advance_after_draw(tier)
 
         # 放在刷新之后，避免被“奖项已抽满”等状态提示覆盖
         if len(winners) == 1:
@@ -1279,7 +1432,7 @@ class LotteryApp:
             message += f" · 下一项「{advanced.name}」"
         self.stage_sub.set(message)
         self._set_stage_result(True)
-        self._fit_stage_font(self.stage_name.get())
+        self._refresh_stage_layout()
         self._result_visible = True
 
     def _advance_after_draw(self, tier: PrizeTier) -> PrizeTier | None:
@@ -1293,7 +1446,6 @@ class LotteryApp:
         for candidate in reversed(self.tiers[:index]):
             if not self.engine.is_full(candidate.id):
                 self.selected_tier_id = candidate.id
-                self._refresh_tiers()
                 return candidate
         return None
 
@@ -1349,12 +1501,8 @@ class LotteryApp:
         """替换名单并重置抽奖状态（Excel 导入与手动输入共用）。"""
         self.names = names
         self._rebuild_engine()
-        self._clear_winners_view()
-        self._set_stage_name("准备抽奖")
         self.file_var.set(source_label)
-        if self.tiers:
-            self.selected_tier_id = self.tiers[-1].id
-        self._refresh_all()
+        self._reset_stage()
 
     def _on_export(self) -> None:
         if not self.engine or not self.engine.winners:
@@ -1387,11 +1535,7 @@ class LotteryApp:
         if not messagebox.askyesno("确认", "确定清空所有中奖记录并重新开始吗？"):
             return
         self.engine.reset()
-        self._clear_winners_view()
-        self._set_stage_name("准备抽奖")
-        if self.tiers:
-            self.selected_tier_id = self.tiers[-1].id
-        self._refresh_all()
+        self._reset_stage()
 
     # ------------------------------------------------------------------ 奖项维护
     def _on_import_tiers(self) -> None:
@@ -1504,12 +1648,23 @@ class LotteryApp:
         if not self.names:
             self.engine = None
             return
-        entrants = [Entrant(id=i, number=i + 1, name=name) for i, name in enumerate(self.names)]
+        entrants = [
+            Entrant(id=i, number=i + 1, name=name)
+            for i, name in enumerate(self.names)
+        ]
         self.engine = LotteryEngine(entrants, self.tiers)
 
     def _clear_winners_view(self) -> None:
         self.winners_tree.delete(*self.winners_tree.get_children())
         self.winners_count_var.set("共 0 位")
+
+    def _reset_stage(self) -> None:
+        """清空中奖列表与舞台结果，回到“准备抽奖”状态。"""
+        self._clear_winners_view()
+        self._set_stage_name("准备抽奖")
+        if self.tiers:
+            self.selected_tier_id = self.tiers[-1].id
+        self._refresh_all()
 
     def _on_close(self) -> None:
         if self._after_id is not None:

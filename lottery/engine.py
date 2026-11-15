@@ -63,14 +63,7 @@ class LotteryEngine:
     def remaining_count(self) -> int:
         return len(self._entrants) - len(self._winners)
 
-    def draw(self, tier_id: str) -> Winner:
-        tier = self.tier(tier_id)
-        if len(self.winners_for(tier_id)) >= tier.count:
-            raise LotteryError(f"「{tier.name}」已抽满 {tier.count} 人")
-        pool = self.remaining_entrants
-        if not pool:
-            raise LotteryError("所有人都已中奖，没有可抽取的名单了")
-        entrant = self._rng.choice(pool)
+    def _record_winner(self, tier: PrizeTier, entrant: Entrant) -> Winner:
         winner = Winner(
             tier_id=tier.id,
             tier_name=tier.name,
@@ -80,18 +73,27 @@ class LotteryEngine:
         self._winners.append(winner)
         return winner
 
+    def draw(self, tier_id: str) -> Winner:
+        tier = self.tier(tier_id)
+        if len(self.winners_for(tier_id)) >= tier.count:
+            raise LotteryError(f"「{tier.name}」已抽满 {tier.count} 人")
+        pool = self.remaining_entrants
+        if not pool:
+            raise LotteryError("所有人都已中奖，没有可抽取的名单了")
+        return self._record_winner(tier, self._rng.choice(pool))
+
     def draw_all(self, tier_id: str) -> list[Winner]:
         """抽出该奖项剩余的全部名额；名单不足时抽出所有剩余人员。"""
         tier = self.tier(tier_id)
         slots = tier.count - len(self.winners_for(tier_id))
         if slots <= 0:
             raise LotteryError(f"「{tier.name}」已抽满 {tier.count} 人")
-        if not self.remaining_entrants:
+        pool = self.remaining_entrants
+        if not pool:
             raise LotteryError("所有人都已中奖，没有可抽取的名单了")
-        winners: list[Winner] = []
-        for _ in range(min(slots, self.remaining_count)):
-            winners.append(self.draw(tier_id))
-        return winners
+        # 一次性无放回抽样，避免逐个 draw 时反复扫描剩余名单（O(n²)）。
+        chosen = self._rng.sample(pool, min(slots, len(pool)))
+        return [self._record_winner(tier, entrant) for entrant in chosen]
 
     def reset(self) -> None:
         """清空中奖记录，名单和奖项保持不变。"""

@@ -107,6 +107,13 @@ class TestLotteryEngine(unittest.TestCase):
 
         self.assertEqual(sequence(42), sequence(42))
 
+    def test_seeded_draw_all_is_deterministic(self):
+        def sequence(seed: int) -> list[int]:
+            engine = make_engine(count=10, seed=seed)
+            return [w.entrant.id for w in engine.draw_all("first")]
+
+        self.assertEqual(sequence(7), sequence(7))
+
 
 if __name__ == "__main__":
     unittest.main()
